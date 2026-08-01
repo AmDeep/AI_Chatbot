@@ -3,7 +3,7 @@ langchain-openai==1.4.0
 langgraph==1.2.9
 langsmith==0.10.2
 pandas==2.2.2
-numpy==2.0.2
+numpy
 langchain_community==0.4.2
 pypdf
 langchain_chroma
