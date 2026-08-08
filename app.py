@@ -1,14 +1,13 @@
+```python
 import os
 import json
 import re
 import datetime
 from dataclasses import dataclass, field
 from typing import List, TypedDict, Annotated
-
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
-
 # LangGraph imports
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -28,10 +27,10 @@ st.markdown("""
     background: linear-gradient(135deg, #1a237e 0%, #0d47a1 100%);
     color: white; padding: 20px 30px; border-radius: 10px; margin-bottom: 20px;
 }
-.badge-verified   { background:#4CAF50; color:white; padding:4px 12px; border-radius:20px; font-weight:bold; font-size:.85em; }
+.badge-verified { background:#4CAF50; color:white; padding:4px 12px; border-radius:20px; font-weight:bold; font-size:.85em; }
 .badge-unverified { background:#f44336; color:white; padding:4px 12px; border-radius:20px; font-weight:bold; font-size:.85em; }
 .injection-warning { background:#fff3e0; border-left:4px solid #ff6f00; padding:10px 15px; border-radius:4px; margin:10px 0; }
-.output-warning    { background:#fce4ec; border-left:4px solid #c62828; padding:10px 15px; border-radius:4px; margin:10px 0; }
+.output-warning { background:#fce4ec; border-left:4px solid #c62828; padding:10px 15px; border-radius:4px; margin:10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,7 +38,6 @@ st.markdown("""
 MEMORY_FILE = "customer_memory.json"
 PLACEHOLDER_NAMES = {"anonymous", "guest", "unknown", "user", "customer", ""}
 LARGE_REFUND_THRESHOLD = 50
-
 INJECTION_PATTERNS = [
     r"ignore (all |previous |prior )?(instructions|prompts|rules)",
     r"you are now|pretend (you are|to be)|act as (if you are|a)",
@@ -52,7 +50,6 @@ INJECTION_PATTERNS = [
     r"print (your|the) (instructions|prompt|system message)",
     r"bypass (safety|content|filter|restriction)",
 ]
-
 OUTPUT_SAFETY_PATTERNS = [
     r"(confidential|internal|proprietary) (data|information|details)",
     r"(competitor|rival) (is better|outperforms|superior)",
@@ -61,12 +58,10 @@ OUTPUT_SAFETY_PATTERNS = [
     r"(free|no charge|complimentary).{0,30}(forever|permanently|always)",
     r"(your data|customer data|account data) (has been|is being) (sold|shared|leaked)",
 ]
-
 MANAGER_ONLY_OPERATIONS = [
     "suspend", "cancel", "terminate", "delete account",
     "reset pin", "change owner", "transfer ownership"
 ]
-
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 def utc_now() -> str:
@@ -102,19 +97,47 @@ def detect_billing_tier(query: str) -> str:
             pass
     return "standard"
 
-
-# ─── OPENAI CLIENT (from Streamlit secrets) ───────────────────────────────────
+# ─── OPENAI CLIENT (load values directly) ─────────────────────────────────────
 @st.cache_resource
 def get_openai_client():
     """
-    Build OpenAI client loading credentials from Streamlit secrets.
-    Set OPENAI_API_KEY (required) and OPENAI_API_BASE (optional) in your
-    Hugging Face Space secrets or .streamlit/secrets.toml locally.
+    Build OpenAI client by explicitly loading credentials.
+    Priority order:
+      1. Streamlit secrets (st.secrets)
+      2. Environment variables
     """
-    return OpenAI()
+    # Load directly
+    api_key = (
+        st.secrets.get("OPENAI_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
+    api_base = (
+        st.secrets.get("OPENAI_API_BASE")
+        or os.getenv("OPENAI_API_BASE")
+        or "https://api.openai.com/v1"
+    )
+
+    # Validate
+    if not api_key:
+        st.error(
+            "❌ OPENAI_API_KEY not found.\n\n"
+            "Set it in `.streamlit/secrets.toml` or as an environment variable / Hugging Face Space secret."
+        )
+        st.stop()
+
+    if not api_key.startswith("sk-"):
+        st.error(
+            f"❌ Invalid OPENAI_API_KEY format (starts with `{api_key[:8]}...`).\n"
+            "A real OpenAI key must start with `sk-`."
+        )
+        st.stop()
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=api_base
+    )
 
 oai_client = get_openai_client()
-
 
 # ─── PERSISTENT MEMORY (file-backed, keyed by customer_account_id) ────────────
 def load_memory_store() -> dict:
@@ -131,7 +154,7 @@ def get_customer_memory(customer_account_id: str, intent_filter: str = None) -> 
         return []
     if intent_filter:
         matching = [i for i in all_interactions if i.get('intent') == intent_filter]
-        other    = [i for i in all_interactions if i.get('intent') != intent_filter]
+        other = [i for i in all_interactions if i.get('intent') != intent_filter]
         return (matching[-3:] + other[-2:])[-5:]
     return all_interactions[-5:]
 
@@ -152,17 +175,15 @@ def format_memory_context(memory: List[dict]) -> str:
         lines.append(
             f"[{m.get('timestamp','')[:10]}] {m.get('intent','').upper()} — "
             f"{m.get('agent_used','')} — {m.get('resolution_type','')}\n"
-            f"  Q: {m.get('query','')[:80]}\n"
-            f"  A: {m.get('response_summary','')[:120]}"
+            f" Q: {m.get('query','')[:80]}\n"
+            f" A: {m.get('response_summary','')[:120]}"
         )
     return "\n".join(lines)
-
 
 # ─── IN-MEMORY CONVERSATION STORE ─────────────────────────────────────────────
 # Keyed by customer_account_id (or session fallback). Persists for the lifetime
 # of the Streamlit server process — future turns in the same session automatically
 # receive full conversation context without re-reading from disk.
-
 def _conv_store() -> dict:
     """Return (and lazily create) the process-level conversation store."""
     if "conv_store" not in st.session_state:
@@ -188,7 +209,6 @@ def _session_key() -> str:
     acct = st.session_state.get("customer_account_id", "")
     return acct if acct else st.session_state.get("_fallback_session_id", "anon")
 
-
 # ─── DATASET ──────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_dataset() -> pd.DataFrame:
@@ -202,7 +222,6 @@ def load_dataset() -> pd.DataFrame:
     else:
         st.error("⚠️ df_enriched.csv not found. Please run the Jupyter notebook first.")
         st.stop()
-
 
 # ─── CONTEXT RETRIEVAL ────────────────────────────────────────────────────────
 def retrieve_context(query: str, intent: str, df: pd.DataFrame, n: int = 2) -> str:
@@ -218,7 +237,6 @@ def retrieve_context(query: str, intent: str, df: pd.DataFrame, n: int = 2) -> s
     parts = [f"[{intent}/{r['resolution_type']}]\n{str(r['full_text'])[:400]}"
              for _, r in top.iterrows()]
     return "\n\n---\n\n".join(parts)
-
 
 # ─── SESSION STATE INIT ───────────────────────────────────────────────────────
 def init_session():
@@ -243,7 +261,6 @@ def init_session():
 init_session()
 df = load_dataset()
 
-
 # ─── LANGGRAPH STATE ──────────────────────────────────────────────────────────
 class AgentState(TypedDict):
     # Inputs
@@ -253,11 +270,10 @@ class AgentState(TypedDict):
     acct_id: str
     pin_confirmed: bool
     greeting: str
-    history_str: str       # Multi-turn conversation history as formatted string
-    memory_ctx: str        # Formatted past interactions from persistent store
-    context: str           # RAG context
+    history_str: str # Multi-turn conversation history as formatted string
+    memory_ctx: str # Formatted past interactions from persistent store
+    context: str # RAG context
     intent: str
-
     # Outputs (written by nodes)
     response_text: str
     agent_display: str
@@ -266,13 +282,10 @@ class AgentState(TypedDict):
     output_flagged: bool
     matched_injection: str
     matched_output: str
-
     # Audit side-effects (accumulated across nodes)
     extra_log_entries: List[dict]
 
-
 # ─── LANGGRAPH NODES ──────────────────────────────────────────────────────────
-
 def input_guardrail_node(state: AgentState) -> AgentState:
     """Node 1 — detect prompt injection."""
     flagged, matched = scan_for_injection(state["query"])
@@ -283,28 +296,24 @@ def input_guardrail_node(state: AgentState) -> AgentState:
             "Your request has been flagged for security review. "
             "A human agent will assist you shortly."
         )
-        state["agent_display"]  = "🛡️ Security System"
-        state["resolution"]     = "blocked"
+        state["agent_display"] = "🛡️ Security System"
+        state["resolution"] = "blocked"
         state["output_flagged"] = False
     return state
-
 
 def supervisor_node(state: AgentState) -> AgentState:
     """Node 2 — classify intent."""
     if state["injection_flag"]:
         state["intent"] = "guardrail"
         return state
-
     # Build a short representation of recent history for intent classification
     recent_history = state.get("history_str", "")
     last_lines = "\n".join(recent_history.split("\n")[-6:]) if recent_history else ""
-
     intent_prompt = f"""Classify into one word: network, billing, account, or escalation.
 Customer: {state['customer_name']} | Status: {state['ver_status']}
 Recent chat: {last_lines[:200]}
 Query: {state['query']}
 Reply with ONE word only."""
-
     resp = oai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": intent_prompt}],
@@ -323,35 +332,30 @@ Reply with ONE word only."""
     })
     return state
 
-
 def network_agent_node(state: AgentState) -> AgentState:
     """Node 3a — network troubleshooting specialist."""
     prompt = f"""You are the Network Support Specialist at Union Mobile.
 Begin with: "{state['greeting']}"
 Provide specific troubleshooting steps.
-
 Conversation history:
 {state['history_str']}
 Customer memory: {state['memory_ctx']}
 Current query: {state['query']}
 Knowledge base: {state['context']}"""
-
     r = oai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3, max_tokens=400
     )
     state["response_text"] = r.choices[0].message.content.strip()
-    state["agent_display"]  = "🔧 Network Agent"
-    state["resolution"]     = "troubleshoot"
+    state["agent_display"] = "🔧 Network Agent"
+    state["resolution"] = "troubleshoot"
     return state
-
 
 def billing_agent_node(state: AgentState) -> AgentState:
     """Node 3b — billing specialist with tier-based RBAC."""
-    greeting   = state["greeting"]
+    greeting = state["greeting"]
     ver_status = state["ver_status"]
-
     if ver_status != "verified":
         state["response_text"] = (
             f"{greeting} Billing information requires identity verification. "
@@ -381,7 +385,6 @@ def billing_agent_node(state: AgentState) -> AgentState:
             prompt = f"""You are the Billing Specialist at Union Mobile.
 Begin with: "{greeting}"
 Customer is verified. Answer billing question precisely.
-
 Conversation history:
 {state['history_str']}
 Customer memory: {state['memory_ctx']}
@@ -398,19 +401,16 @@ Knowledge base: {state['context']}"""
                 if any(w in state["response_text"].lower() for w in ["refund","credit","reimburse"])
                 else "inform"
             )
-
     state["agent_display"] = "💰 Billing Agent"
     return state
 
-
 def account_agent_node(state: AgentState) -> AgentState:
     """Node 3c — account management specialist."""
-    greeting   = state["greeting"]
+    greeting = state["greeting"]
     ver_status = state["ver_status"]
-
     if ver_status != "verified":
         state["response_text"] = f"{greeting} Account management requires identity verification first."
-        state["resolution"]    = "blocked"
+        state["resolution"] = "blocked"
     elif any(op in state["query"].lower() for op in MANAGER_ONLY_OPERATIONS) and not state["pin_confirmed"]:
         state["response_text"] = (
             f"{greeting} This operation requires senior manager authorisation. "
@@ -421,7 +421,6 @@ def account_agent_node(state: AgentState) -> AgentState:
         prompt = f"""You are the Account Management Specialist at Union Mobile.
 Begin with: "{greeting}"
 Customer is verified. Help with their account request.
-
 Conversation history:
 {state['history_str']}
 Customer memory: {state['memory_ctx']}
@@ -433,29 +432,24 @@ Knowledge base: {state['context']}"""
             temperature=0.3, max_tokens=400
         )
         state["response_text"] = r.choices[0].message.content.strip()
-        state["resolution"]    = "inform"
-
+        state["resolution"] = "inform"
     state["agent_display"] = "👤 Account Agent"
     return state
-
 
 def escalation_agent_node(state: AgentState) -> AgentState:
     """Node 3d — escalation with handoff packet generation."""
     greeting = state["greeting"]
-    acct_id  = state["acct_id"]
-
+    acct_id = state["acct_id"]
     summary_prompt = f"""Create escalation handoff (100 words): customer {state['customer_name']}, account {acct_id}.
 Issue: {state['query']}
 History: {state['history_str']}
 Include CUSTOMER, ISSUE, ATTEMPTS, REASON, URGENCY."""
-
     sum_r = oai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": summary_prompt}],
         temperature=0.2, max_tokens=200
     )
     esc_summary = sum_r.choices[0].message.content.strip()
-
     # Save escalation packet to persistent memory
     if acct_id:
         append_customer_memory(acct_id, {
@@ -463,14 +457,12 @@ Include CUSTOMER, ISSUE, ATTEMPTS, REASON, URGENCY."""
             "agent_used": "EscalationAgent", "resolution_type": "escalate",
             "response_summary": esc_summary[:300], "escalation_packet": esc_summary
         })
-
     state["response_text"] = (
         f"{greeting} I understand your frustration. I'm escalating your case "
         "to a senior specialist with full context. You'll receive a follow-up within 24 hours."
     )
     state["agent_display"] = "🚨 Escalation Team"
-    state["resolution"]    = "escalate"
-
+    state["resolution"] = "escalate"
     state["extra_log_entries"].append({
         "timestamp": utc_now(), "node": "EscalationAgent_HANDOFF",
         "customer_name": state["customer_name"],
@@ -483,18 +475,15 @@ Include CUSTOMER, ISSUE, ATTEMPTS, REASON, URGENCY."""
     })
     return state
 
-
 def output_guardrail_node(state: AgentState) -> AgentState:
     """Node 4 — output safety scan."""
     if state["injection_flag"]:
-        state["output_flagged"]   = False
-        state["matched_output"]   = ""
+        state["output_flagged"] = False
+        state["matched_output"] = ""
         return state
-
     out_flagged, out_pattern = scan_output_safety(state["response_text"])
     state["output_flagged"] = out_flagged
     state["matched_output"] = out_pattern or ""
-
     if out_flagged:
         state["response_text"] = (
             "I appreciate your patience. Let me connect you with a specialist "
@@ -511,82 +500,69 @@ def output_guardrail_node(state: AgentState) -> AgentState:
         })
     return state
 
-
 # ─── ROUTING FUNCTIONS ────────────────────────────────────────────────────────
-
 def route_after_guardrail(state: AgentState) -> str:
     return "end" if state["injection_flag"] else "supervisor"
 
 def route_after_supervisor(state: AgentState) -> str:
     intent_map = {
-        "network":    "network_agent",
-        "billing":    "billing_agent",
-        "account":    "account_agent",
+        "network": "network_agent",
+        "billing": "billing_agent",
+        "account": "account_agent",
         "escalation": "escalation_agent",
     }
     return intent_map.get(state["intent"], "network_agent")
 
-
 # ─── BUILD LANGGRAPH ──────────────────────────────────────────────────────────
-
 def build_graph():
     g = StateGraph(AgentState)
-
-    g.add_node("input_guardrail",   input_guardrail_node)
-    g.add_node("supervisor",        supervisor_node)
-    g.add_node("network_agent",     network_agent_node)
-    g.add_node("billing_agent",     billing_agent_node)
-    g.add_node("account_agent",     account_agent_node)
-    g.add_node("escalation_agent",  escalation_agent_node)
-    g.add_node("output_guardrail",  output_guardrail_node)
-
+    g.add_node("input_guardrail", input_guardrail_node)
+    g.add_node("supervisor", supervisor_node)
+    g.add_node("network_agent", network_agent_node)
+    g.add_node("billing_agent", billing_agent_node)
+    g.add_node("account_agent", account_agent_node)
+    g.add_node("escalation_agent", escalation_agent_node)
+    g.add_node("output_guardrail", output_guardrail_node)
     g.set_entry_point("input_guardrail")
-
     g.add_conditional_edges("input_guardrail", route_after_guardrail, {
-        "end":        "output_guardrail",
+        "end": "output_guardrail",
         "supervisor": "supervisor",
     })
     g.add_conditional_edges("supervisor", route_after_supervisor, {
-        "network_agent":    "network_agent",
-        "billing_agent":    "billing_agent",
-        "account_agent":    "account_agent",
+        "network_agent": "network_agent",
+        "billing_agent": "billing_agent",
+        "account_agent": "account_agent",
         "escalation_agent": "escalation_agent",
     })
     for specialist in ["network_agent","billing_agent","account_agent","escalation_agent"]:
         g.add_edge(specialist, "output_guardrail")
     g.add_edge("output_guardrail", END)
-
     return g.compile()
 
 agent_graph = build_graph()
 
-
 # ─── CORE PIPELINE ────────────────────────────────────────────────────────────
-
 def process_message(query: str) -> dict:
     """
     Prepare state, run LangGraph, persist memory, update in-memory conv history.
     """
-    timestamp     = utc_now()
+    timestamp = utc_now()
     customer_name = st.session_state.customer_name or "Guest"
-    ver_status    = "verified" if st.session_state.verified else "unverified"
-    acct_id       = st.session_state.customer_account_id
+    ver_status = "verified" if st.session_state.verified else "unverified"
+    acct_id = st.session_state.customer_account_id
     pin_confirmed = st.session_state.account_pin_confirmed
-    greeting      = get_greeting(customer_name)
-    sess_key      = _session_key()
-
+    greeting = get_greeting(customer_name)
+    sess_key = _session_key()
     # ── Load in-memory conversation history ──────────────────────────────────
-    conv_history = get_conv_history(sess_key)   # [{role, content}, ...]
+    conv_history = get_conv_history(sess_key) # [{role, content}, ...]
     history_str = ""
     for turn in conv_history[-6:]:
         history_str += f"{turn['role'].upper()}: {turn['content']}\n"
-
     # ── Intent-filtered persistent memory (pre-fetch; supervisor refines) ────
     # We do a quick intent guess here only to pre-filter memory; supervisor
     # will re-classify with full context and overwrite state["intent"].
-    memory     = get_customer_memory(acct_id) if acct_id else []
+    memory = get_customer_memory(acct_id) if acct_id else []
     memory_ctx = format_memory_context(memory)
-
     # ── RAG context (intent refined after supervisor runs inside graph) ──────
     # We pass a generic context here; per-agent RAG is applied in each node
     # if you want to keep it truly per-agent, move retrieve_context inside each
@@ -595,36 +571,33 @@ def process_message(query: str) -> dict:
     # For graph simplicity we retrieve once in process_message after the fact;
     # the nodes receive this context via state.
     # (A separate pre-supervisor fetch would require two graph passes.)
-    context = ""   # Nodes will receive "" on first pass; see post-supervisor hook below.
-
+    context = "" # Nodes will receive "" on first pass; see post-supervisor hook below.
     # Build initial state
     initial_state: AgentState = {
-        "query":           query,
-        "customer_name":   customer_name,
-        "ver_status":      ver_status,
-        "acct_id":         acct_id,
-        "pin_confirmed":   pin_confirmed,
-        "greeting":        greeting,
-        "history_str":     history_str,
-        "memory_ctx":      memory_ctx,
-        "context":         context,
-        "intent":          "",
-        "response_text":   "",
-        "agent_display":   "🤖 Support Agent",
-        "resolution":      "inform",
-        "injection_flag":  False,
-        "output_flagged":  False,
+        "query": query,
+        "customer_name": customer_name,
+        "ver_status": ver_status,
+        "acct_id": acct_id,
+        "pin_confirmed": pin_confirmed,
+        "greeting": greeting,
+        "history_str": history_str,
+        "memory_ctx": memory_ctx,
+        "context": context,
+        "intent": "",
+        "response_text": "",
+        "agent_display": "🤖 Support Agent",
+        "resolution": "inform",
+        "injection_flag": False,
+        "output_flagged": False,
         "matched_injection": "",
-        "matched_output":  "",
+        "matched_output": "",
         "extra_log_entries": [],
     }
-
     # ── Run LangGraph ────────────────────────────────────────────────────────
     # We use a two-step approach: run supervisor first to get intent, then
     # inject RAG context before specialist node runs.
     # LangGraph executes the full graph in one call; we enrich context by
     # running a lightweight intent-only pass first, then the full graph.
-
     # Step 1: get intent (lightweight)
     intent_prompt = f"""Classify into one word: network, billing, account, or escalation.
 Customer: {customer_name} | Status: {ver_status}
@@ -638,29 +611,23 @@ Reply with ONE word only."""
     )
     pre_intent = intent_resp.choices[0].message.content.strip().lower()
     pre_intent = pre_intent if pre_intent in {"network","billing","account","escalation"} else "network"
-
     # Step 2: fetch RAG context and intent-filtered memory now that we know intent
-    context    = retrieve_context(query, pre_intent, df)
-    memory     = get_customer_memory(acct_id, intent_filter=pre_intent) if acct_id else []
+    context = retrieve_context(query, pre_intent, df)
+    memory = get_customer_memory(acct_id, intent_filter=pre_intent) if acct_id else []
     memory_ctx = format_memory_context(memory)
-
-    initial_state["context"]    = context
+    initial_state["context"] = context
     initial_state["memory_ctx"] = memory_ctx
-
     # Step 3: run full LangGraph (supervisor will re-classify; result is authoritative)
     final_state = agent_graph.invoke(initial_state)
-
-    intent       = final_state["intent"]
+    intent = final_state["intent"]
     response_txt = final_state["response_text"]
-    agent_name   = final_state["agent_display"]
-    resolution   = final_state["resolution"]
-    inj_flag     = final_state["injection_flag"]
-    out_flagged  = final_state["output_flagged"]
-
+    agent_name = final_state["agent_display"]
+    resolution = final_state["resolution"]
+    inj_flag = final_state["injection_flag"]
+    out_flagged = final_state["output_flagged"]
     # ── Flush extra log entries produced inside nodes ────────────────────────
     for entry in final_state.get("extra_log_entries", []):
         st.session_state.decision_log.append(entry)
-
     # ── Log final decision ───────────────────────────────────────────────────
     st.session_state.decision_log.append({
         "timestamp": timestamp,
@@ -675,11 +642,9 @@ Reply with ONE word only."""
         "resolution_type": resolution,
         "response_summary": response_txt[:100],
     })
-
     # ── Update in-memory conversation history ────────────────────────────────
     append_conv_turn(sess_key, "user", query)
     append_conv_turn(sess_key, "assistant", response_txt)
-
     # ── Save to persistent customer memory ──────────────────────────────────
     if acct_id and resolution not in ["blocked"] and intent not in ["escalation", "guardrail"]:
         append_customer_memory(acct_id, {
@@ -687,13 +652,11 @@ Reply with ONE word only."""
             "agent_used": agent_name, "resolution_type": resolution,
             "response_summary": response_txt[:200]
         })
-
     # ── Set warning flags ────────────────────────────────────────────────────
     if inj_flag:
         st.session_state.injection_warned = True
     if out_flagged:
         st.session_state.output_warned = True
-
     return {
         "response": response_txt,
         "agent_name": agent_name,
@@ -703,30 +666,23 @@ Reply with ONE word only."""
         "output_flagged": out_flagged,
     }
 
-
 # ─── STREAMLIT UI ─────────────────────────────────────────────────────────────
-
 st.markdown("""
 <div class="main-header">
     <h1 style="margin:0;font-size:1.8em;">📱 Union Mobile AI Customer Support</h1>
 </div>
 """, unsafe_allow_html=True)
 
-
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-
     st.divider()
     st.markdown("## 🔐 Customer Login")
-
     conv_options = [""] + list(df['conversation_id'].unique())
     sel_conv = st.selectbox("Select Account ID", conv_options)
     if sel_conv:
         st.session_state.conversation_id = sel_conv
-
     inp_name = st.text_input("Customer Name", placeholder="Enter your full name")
-    inp_pin  = st.text_input("Account PIN", type="password", placeholder="4-digit PIN")
-
+    inp_pin = st.text_input("Account PIN", type="password", placeholder="4-digit PIN")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Verify Identity", type="primary", use_container_width=True):
@@ -741,12 +697,12 @@ with st.sidebar:
                 else:
                     r = rec.iloc[0]
                     name_ok = inp_name.strip().lower() == str(r['customer_name']).strip().lower()
-                    pin_ok  = inp_pin.strip() == str(r['account_pin'])
+                    pin_ok = inp_pin.strip() == str(r['account_pin'])
                     if name_ok and pin_ok:
                         prev_acct = st.session_state.get("customer_account_id", "")
-                        st.session_state.verified             = True
-                        st.session_state.customer_name        = r['customer_name']
-                        st.session_state.customer_account_id  = str(r['customer_account_id'])
+                        st.session_state.verified = True
+                        st.session_state.customer_name = r['customer_name']
+                        st.session_state.customer_account_id = str(r['customer_account_id'])
                         st.session_state.account_pin_confirmed = True
                         # Migrate anonymous conv history to the verified account key
                         anon_key = st.session_state.get("_fallback_session_id", "")
@@ -759,16 +715,14 @@ with st.sidebar:
                         st.rerun()
                     else:
                         st.error("Name or PIN incorrect")
-
     with col2:
         if st.button("🔓 Guest Mode", use_container_width=True):
-            st.session_state.verified             = False
-            st.session_state.customer_name        = inp_name or "Guest"
-            st.session_state.customer_account_id  = ""
+            st.session_state.verified = False
+            st.session_state.customer_name = inp_name or "Guest"
+            st.session_state.customer_account_id = ""
             st.session_state.account_pin_confirmed = False
             st.info("Guest mode")
             st.rerun()
-
     # Status badge
     st.markdown("### Status")
     if st.session_state.verified:
@@ -777,9 +731,7 @@ with st.sidebar:
         st.caption(f"Account ID: {st.session_state.customer_account_id}")
     else:
         st.markdown('<span class="badge-unverified">❌ NOT VERIFIED</span>', unsafe_allow_html=True)
-
     st.divider()
-
     col3, col4 = st.columns(2)
     with col3:
         if st.button("🔄 Reset Session", use_container_width=True):
@@ -800,17 +752,14 @@ with st.sidebar:
                     json.dump(store, f, indent=2)
                 clear_conv_history(st.session_state.customer_account_id)
                 st.success("Cleared")
-
     # Test credentials
     st.markdown("### 💡 Test Credentials")
     if not df.empty:
         s = df.iloc[0]
-        st.code(f"ID:   {s['conversation_id']}\nName: {s['customer_name']}\nPIN:  {s['account_pin']}")
-
+        st.code(f"ID: {s['conversation_id']}\nName: {s['customer_name']}\nPIN: {s['account_pin']}")
 
 # ── MAIN AREA ─────────────────────────────────────────────────────────────────
 col_chat, col_info = st.columns([2, 1])
-
 with col_chat:
     # Security warning banners
     if st.session_state.injection_warned:
@@ -819,9 +768,7 @@ with col_chat:
     if st.session_state.output_warned:
         st.markdown('<div class="output-warning">🔴 <b>Output Safety Alert:</b> A generated response was intercepted and replaced for policy compliance.</div>',
                     unsafe_allow_html=True)
-
     st.markdown("### 💬 Chat")
-
     # Welcome message
     if not st.session_state.messages:
         if st.session_state.verified:
@@ -834,14 +781,12 @@ with col_chat:
             "role": "assistant", "content": welcome, "agent": "🤖 Support Assistant",
             "timestamp": utc_now()
         })
-
     # Chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             if msg["role"] == "assistant" and msg.get("agent"):
                 st.caption(msg["agent"])
             st.write(msg["content"])
-
     # Input
     if user_input := st.chat_input("Type your message here..."):
         st.session_state.messages.append({
@@ -861,7 +806,6 @@ with col_chat:
                     "agent": "⚠️ System", "timestamp": utc_now()
                 })
         st.rerun()
-
 
 with col_info:
     # ── INTERACTION HISTORY ──
@@ -885,7 +829,6 @@ with col_info:
                 st.info("No past interactions found.")
         else:
             st.info("Verify your identity to view history.")
-
     # ── ACCOUNT INFO ──
     if st.session_state.verified and st.session_state.conversation_id:
         st.markdown("### 👤 Account")
@@ -896,14 +839,13 @@ with col_info:
                 st.write(f"**Name:** {r['customer_name']}")
                 st.write(f"**Account ID:** {r.get('customer_account_id','N/A')}")
                 st.write(f"**Access Level:** {r['access_level']}")
-
     # ── QUICK ACTIONS ──
     st.markdown("### ⚡ Quick Actions")
     actions = {
-        "📶 Signal issue":   "My signal keeps dropping. What troubleshooting steps can I take?",
-        "💳 Check bill":     "Can you explain why my bill is higher than usual this month?",
-        "📱 Change plan":    "I'd like to upgrade to a plan with more data.",
-        "🆘 Get help":       "I've had this issue unresolved for three weeks now."
+        "📶 Signal issue": "My signal keeps dropping. What troubleshooting steps can I take?",
+        "💳 Check bill": "Can you explain why my bill is higher than usual this month?",
+        "📱 Change plan": "I'd like to upgrade to a plan with more data.",
+        "🆘 Get help": "I've had this issue unresolved for three weeks now."
     }
     for label, msg in actions.items():
         if st.button(label, use_container_width=True):
@@ -918,7 +860,6 @@ with col_info:
                 except Exception as e:
                     st.error(str(e)[:80])
             st.rerun()
-
     # ── CONVERSATION CONTEXT INDICATOR ──
     sess_key = _session_key()
     turns = len(get_conv_history(sess_key)) // 2
@@ -926,7 +867,6 @@ with col_info:
         st.markdown("### 🔄 Conversation")
         st.metric("Turns in session", turns)
         st.caption("Full conversation history carried forward each turn via in-memory store.")
-
 
 # ── DECISION LOG ──────────────────────────────────────────────────────────────
 st.divider()
@@ -942,18 +882,15 @@ with st.expander("View Full Decision Log", expanded=False):
         ca, cb, cc, cd = st.columns(4)
         ca.metric("Total Nodes", len(df_log))
         cb.metric("Injections Blocked", int(df_log.get('injection_flag', pd.Series([False]*len(df_log))).sum()))
-        cc.metric("Output Intercepts",  int(df_log.get('output_flagged', pd.Series([False]*len(df_log))).sum()))
+        cc.metric("Output Intercepts", int(df_log.get('output_flagged', pd.Series([False]*len(df_log))).sum()))
         cd.metric("Escalations",
                   len(df_log[df_log.get('resolution_type', pd.Series()) == 'escalate']) if 'resolution_type' in df_log else 0)
-
         dcols = ['timestamp','node','customer_name','verification_status',
                  'intent_category','injection_flag','resolution_type','response_summary']
         show = [c for c in dcols if c in df_log.columns]
-
         def color_row(row):
             bg = COLORS.get(row.get('intent_category',''), '#FFFFFF')
             return [f'background-color:{bg}'] * len(row)
-
         st.dataframe(df_log[show].style.apply(color_row, axis=1),
                      use_container_width=True, height=300)
         csv = df_log[show].to_csv(index=False)
@@ -964,7 +901,6 @@ with st.expander("View Full Decision Log", expanded=False):
     else:
         st.info("No log entries yet. Start a conversation.")
 
-
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 st.divider()
 st.markdown("""
@@ -973,3 +909,4 @@ st.markdown("""
     <br>⚠️ Demonstration system only.
 </div>
 """, unsafe_allow_html=True)
+```
