@@ -99,13 +99,6 @@ def detect_billing_tier(query: str) -> str:
 # ─── OPENAI CLIENT (load values directly) ─────────────────────────────────────
 @st.cache_resource
 def get_openai_client():
-    """
-    Build OpenAI client by explicitly loading credentials.
-    Priority order:
-      1. Streamlit secrets (st.secrets)
-      2. Environment variables
-    """
-    # Load directly
     api_key = (
         st.secrets.get("OPENAI_API_KEY")
         or os.getenv("OPENAI_API_KEY")
@@ -116,27 +109,19 @@ def get_openai_client():
         or "https://api.openai.com/v1"
     )
 
-    # Validate
     if not api_key:
-        st.error(
-            "❌ OPENAI_API_KEY not found.\n\n"
-            "Set it in `.streamlit/secrets.toml` or as an environment variable / Hugging Face Space secret."
-        )
+        st.error("❌ OPENAI_API_KEY not found.")
         st.stop()
 
-    if not api_key.startswith("sk-"):
-        st.error(
-            f"❌ Invalid OPENAI_API_KEY format (starts with `{api_key[:8]}...`).\n"
-            "A real OpenAI key must start with `sk-`."
+    # Optional: only warn, don’t block, if it doesn’t look like a classic OpenAI key
+    if not api_key.startswith(("sk-", "sk-proj-")):
+        st.warning(
+            f"⚠️ API key does not start with 'sk-'. "
+            f"Current prefix: `{api_key[:12]}...` — "
+            "this may be intentional if you are using a proxy / Azure / other provider."
         )
-        st.stop()
 
-    return OpenAI(
-        api_key=api_key,
-        base_url=api_base
-    )
-
-oai_client = get_openai_client()
+    return OpenAI(api_key=api_key, base_url=api_base)
 
 # ─── PERSISTENT MEMORY (file-backed, keyed by customer_account_id) ────────────
 def load_memory_store() -> dict:
