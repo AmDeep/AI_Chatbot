@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import re
@@ -909,4 +908,3 @@ st.markdown("""
     <br>⚠️ Demonstration system only.
 </div>
 """, unsafe_allow_html=True)
-```
